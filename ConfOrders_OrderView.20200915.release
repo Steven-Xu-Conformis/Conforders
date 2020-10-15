@@ -1,0 +1,187 @@
+######################################################
+######################################################
+# ConfOrders Order View Release Note
+######################################################
+######################################################
+
+
+######################################################
+# Background
+######################################################
+
+Orders.Conformis.com uses the database view 
+	CONFORDERS.XXCMIS_CONF_ORD_IVIEW_DOF_V
+as the source of order data. The result source data is from a table
+	XXCMIS.XXCMIS_CONF_ORD
+
+This table is populate by a scheduled task through
+		APPS.XXCMIS_ORD_CONF_PKG
+	
+Problems to solve:
+	1. Performance
+	2. Data delay
+		Right now the data is refreshed every 10-12 minutes.
+		Data refresh takes about 3 minutes
+
+Change is required to:
+	1. Improve the performace of the view
+	2. Improve the view so that the data is REALTIME or near REALTIME
+
+
+######################################################
+# Objective
+######################################################
+
+1. Replace XXCMIS.XXCMIS_CONF_ORD and APPS.XXCMIS_ORD_CONF_PKG with a MATERIALIZED View
+	CONFORDERS.XXCMIS_CONF_ORD_MV
+2. Refresh within every 3 minutes (depending on database performance)
+
+
+######################################################
+# Data related change
+######################################################
+
+######################################################
+# Data Inclusion Change
+
+Number of rows in the view changed 
+	From:	144K
+	To	:	150K
+
+	Addition	: 	Records with Surgeons that are not included in the old SURGEON View apps.cnfxx_ord_surgeon_v (about 5.6K))
+
+	
+######################################################
+# Data Change
+
+Field Name = SHIPPED_DATE
+	Data change due to data source change
+	Number of rows affected: < 50 (INVOICE HOLD records, old CLOSED records)
+		Before	:	SHIPPED_DATE = MAX(DELIVERY.SHIPPED_DATE)
+		After	: 	SHIPPED_DATE = ORDERLINE.ACTUAL_SHIPMENT_DATE
+
+Field Name = CATALOG_NUMBER
+	Data change due to logic change (upgrade)
+		Before	:	The join was using ORDERLINE.ORDERED_ITEM and missed a lot of joins
+		After:	:	The join is using INVETORY_ITEM_ID, led to more records populated
+		
+Field Name = UDI_CATALOG
+	Data change due to logic change (upgrade)
+		Before	:	The join was using ORDERLINE.ORDERED_ITEM and missed a lot of joins
+		After:	:	The join is using INVETORY_ITEM_ID, led to more records populated
+		
+		
+######################################################
+# Deployment
+######################################################
+In Oracle Development database:
+	Step 1: create new materialized view 
+				CONFORDERS.XXCMIS_CONF_ORD_MV
+	Step 2: add a column SERIAL_NUMBER_ORI in CONFORDERS.SERIAL_NUMBER_ORI
+	Step 3: back up current logic for 
+				CONFORDERS.XXCMIS_CONF_ORD_IVIEW_DOF_V
+	Step 4: replace logic to use new MV as source table for
+				CONFORDERS.XXCMIS_CONF_ORD_IVIEW_DOF_V
+		
+
+######################################################
+# Appendix 1: Old dependency tree
+######################################################
+
+CONFORDERS.XXCMIS_CONF_ORD_IVIEW_DOF_V
+    CONFORDERS.iview_serial_number
+    CONFORDERS.dof_serial_number
+    XXCMIS.XXCMIS_CONF_ORD
+        APPS.XXCMIS_ORD_CONF_PKG
+            CONFORDERS.XXCMIS_CONF_ORDERS_V 
+                apps.XXCMIS_CONF_ORD_V
+                    apps.oe_order_headers_all ooha,
+                    apps.oe_order_lines_all oola, -- tables used to retrieve surgeon ID 
+                    apps.hz_cust_account_roles hz_roles,
+                    apps.hz_cust_accounts_all hz_acct,
+                    apps.hz_relationships hz_rel,
+                    apps.hz_parties hz_part, --view used to retrieve product category information 
+                    apps.CNFXX_BI_PROD_CAT_V2 prod_cat, -- view used to retrieve WIP information
+                    apps.cnfxx_ord_ship_addr_v ship_addr, --used to retrieve PACS data
+                    --          conformis.PACS pacs,          --used to retrieve sales reps data     ---- Commited for V5.0
+                    --  apps.cnfxx_bi_jtf_reps_v rep,
+                    jtf_rs_salesreps reps,
+                    XX_CONMIS_ITEM_CAT_V item_cat,         -- Added By Priya on 02/01/16
+                    oe_transaction_types_tl olt            -- Added BY Priya on 06/19/2018 for HIP        
+                    apps.jtf_rs_resource_extns
+                apps.cnfxx_ord_surgeon_v
+                    apps.hz_relationships rel,
+                    apps.hz_org_contacts org_cont,
+                    apps.cnfxx_ord_cust_acct_roles_v loc,
+                    apps.ams_org_contact_details_v addr,
+                    apps.hz_cust_site_uses_all su,
+                    apps.hz_parties phys,
+                    apps.hz_parties hosp,
+            APPS.XXCMIS_G3_ORDERS_CONFORMIS_V
+                apps.oe_order_headers_all ooha,
+                apps.oe_order_lines_all oola,
+                apps.hz_cust_account_roles hz_roles,
+                apps.hz_cust_accounts_all hz_acct,
+                apps.hz_relationships hz_rel,
+                apps.hz_parties hz_part,
+                apps.cnfxx_bi_prod_cat_v2 prod_cat,
+                apps.cnfxx_ord_ship_addr_v ship_addr,
+                conformis.pacs pacs,
+                apps.jtf_rs_salesreps reps,
+                apps.XX_CONMIS_ITEM_CAT_V item_cat,
+                apps.oe_transaction_types_tl olt,
+                --          conforders.irf xxcmis_irf,                   --Commented V2.0
+                --          apps.xxcmis_irf_orders_status_tbl xiost,     --Commented V2.0
+                apps.MTL_SYSTEM_ITEMS_B MST,
+                apps.mtl_item_categories micat,
+                apps.mtl_categories mcat,
+                apps.mtl_category_sets mcats,
+                apps.mtl_item_categories micat1,
+                apps.mtl_categories mcat1,
+                apps.mtl_category_sets mcats1,
+                apps.cnfxx_ord_surgeon_v s
+
+
+######################################################
+# Appendix 2: New dependency tree
+######################################################	
+CONFORDERS.XXCMIS_CONF_ORD_MV
+	APPS.OE_ORDER_HEADERS_ALL oha
+	APPS.OE_ORDER_LINES_ALL oha
+	APPS.OE_TRANSACTION_TYPES_TL ott 
+	APPS.XXCMIS_UNI_CONTACT_V surgeon 
+		HZ_CUST_ACCOUNT_ROLES
+		HZ_RELATIONSHIPS
+		HZ_PARTIES
+		HZ_ORG_CONTACTS
+	APPS.XXCMIS_UNI_SITE_USE_V hospital 
+		HZ_CUST_SITE_USES_ALL site_use
+		RA_TERRITORIES terr 
+		HZ_CUST_ACCT_SITES_ALL cas 
+		HZ_PARTY_SITES ps 
+		HZ_CUST_ACCOUNTS_ALL acct 
+		HZ_LOCATIONS loc 
+		HZ_PARTIES party 
+		RA_TERMS_TL term 
+	APPS.XXCMIS_UNI_US_SALESREP_V reps 
+		JTF_RS_SALESREPS        reps
+		JTF_RS_RESOURCE_EXTNS   res 
+        XXCMIS_UNI_SALES_GROUP_TC_V mem
+			JTF_RS_GROUP_MEMBERS
+			JTF_RS_GROUPS_B
+			JTF_RS_GROUPS_TL
+			JTF_RS_ROLE_RELATIONS
+	APPS.FND_LOOKUP_VALUES msi_lkup 
+	APPS.XXCMIS_UNI_PACS_V pacs 
+		CONFORMIS.PACS_DATA
+	APPS.XXCMIS_DRD_HIP_REVISION_V
+		CONFORDERS.HIP_REVISION
+	APPS.XXCMIS_UNI_ITEM_V
+		MTL_SYSTEM_ITEMS_B
+		MTL_ITEM_CATEGORIES
+		MTL_CATEGORIES_B
+		PER_ALL_PEOPLE_F
+		MTL_ITEM_CATEGORIES
+		
+		
+		
