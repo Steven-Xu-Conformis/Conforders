@@ -36,6 +36,35 @@ Change is required to:
 	CONFORDERS.XXCMIS_CONF_ORD_MV
 2. Refresh within every 3 minutes (depending on database performance)
 
+######################################################
+# Technical direction
+######################################################
+
+As the approach to use Materialized View did not prove to provide stable performance, we switch to
+an approach to execute incremental update to the table.
+
+1. add a new view APPS.XXCMIS_CONF_ORD_V2
+	. this view has the same logic as the previously built materialized view.
+	. this view will be the new source of the table
+	. this view provides better performance than the existing view apps.XXCMIS_CONF_ORD_V
+2. add a few columns to table XXCMIS.XXCMIS_CONF_ORD
+	. the new columns are mostly key columns and date columns, which are necessary for incremental process
+3. add a few new indices 
+	. the new indices to provide better performance for incremental process
+4. change the current package logic to do incremental process to the table
+	. the logic will 
+		. delete old records (RETURN and CANCELLED and DELETED)
+		. insert new records
+		. update existing records
+	. performance comparison table (in seconds):
+						DEV			PROD
+		Old process		450			240
+		New Process		80			20
+5.	change the package run frequency to 1 minute or less (instead of 10 minutes right now)		
+
+		
+		
+
 
 ######################################################
 # Data related change
@@ -69,6 +98,7 @@ Field Name = UDI_CATALOG
 	Data change due to logic change (upgrade)
 		Before	:	The join was using ORDERLINE.ORDERED_ITEM and missed a lot of joins
 		After:	:	The join is using INVETORY_ITEM_ID, led to more records populated
+		
 		
 		
 ######################################################

@@ -46,8 +46,8 @@ select distinct
 	country_code,
 	patella_flag
 FROM
-	CONFORDERS.XXCMIS_CONF_ORD_MV a
+	XXCMIS.XXCMIS_CONF_ORD a
 	LEFT OUTER JOIN conforders.iview_serial_number b ON a.serial_number_ori = b.serial_number_ori
 	LEFT OUTER JOIN conforders.dof_serial_number c ON a.serial_number = c.serial_number
-	LEFT OUTER JOIN conforders.cordera_iview_serial_number d ON a.serial_number = c.serial_number
+	LEFT OUTER JOIN conforders.cordera_iview_serial_number d ON a.serial_number = d.serial_number
 ;

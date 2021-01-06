@@ -1,5 +1,15 @@
-create or replace PACKAGE      XXCMIS_ORD_CONF_PKG
-AS
+/** to do **
+ * 1. change table
+ *		a. add all new columns to XXCMIS.XXCMIS_CONF_ORD
+ *		b. add one new index to XXCMIS.XXCMIS_CONF_ORD
+ * 2. change package
+ *		a. replace XXCMIS_ORD_CONF_PKG_TEST with XXCMIS_ORD_CONF_PKG (4)
+ *		b. replace XXCMIS_CONF_ORD_TN with XXCMIS_CONF_ORD (4)
+ *		c. comment out all DMBS_OUTPUT
+ */ 
+
+create or replace package      XXCMIS_ORD_CONF_PKG
+as
 /******************************************************************************
  NAME:         APPS.XXCMIS_ORD_CONF_PKG
  PURPOSE:   To populate the table for orders.conformis to fetch the order data
@@ -7,23 +17,25 @@ AS
    REVISIONS:
    Ver               Date                 Author                  Description
    ---------        --------------      ---------------         ------------------------------------
-   1.0              14-FEB-2018       Priya H              Initial Version
+   1.0              14-FEB-2018       	Priya H              	Initial Version
+   9.0				21-OCT-2020			Steven Xu				Added two procedures
 *******************************************************************************/
 
-   PKB_RESP_ID      NUMBER := fnd_global.RESP_ID;
-   PKB_RESP_APPL_ID NUMBER := fnd_global.RESP_APPL_ID;
-   PKB_USER_ID      NUMBER := fnd_global.USER_ID;
-   PKB_SYSDATE      DATE   := SYSDATE; 
+	PKB_RESP_ID      number := fnd_global.RESP_ID;
+	PKB_RESP_APPL_ID number := fnd_global.RESP_APPL_ID;
+	PKB_USER_ID      number := fnd_global.USER_ID;
+	PKB_SYSDATE      date   := sysdate; 
       
-PROCEDURE MAIN (RETCODE       OUT NUMBER,
-                ERRBUF        OUT VARCHAR2
-                                      );                            
+	procedure MAIN (RETCODE out number, ERRBUF out varchar2);
+	--old process						-- dev: 450 seconds		prod: 242 seconds
+	procedure REFRESH_ORD_CONF;			-- dev: 182 seconds		prod: 176 seconds
+	procedure INCREMENT_ORD_CONF;		-- dev: 80 seconds		prod: 18 seconds
                                       
-END XXCMIS_ORD_CONF_PKG;
+end XXCMIS_ORD_CONF_PKG;
 
 
-create or replace PACKAGE BODY      XXCMIS_ORD_CONF_PKG
-AS
+create or replace package body      XXCMIS_ORD_CONF_PKG
+as
 /******************************************************************************
  NAME:         APPS.XXCMIS_ORD_CONF_PKG
  PURPOSE:      Populate the table for orders.conformis to fetch the order data
@@ -40,435 +52,284 @@ AS
    7.0              22-Feb-2020		  Infosense			   Added logic to show ORDER_DETAILS_2_ORDCNF order status - Orders.Conformis.
    8.0              31-Mar-2020       Infosense            Added logic to change existing of 'ACTUAL_SURGERY_DATE' to 'RESCHEDULED_SURGERY_DATE' and added
 	                                                       DFF Attribute7 ('ACTUAL_SURGERY_DATE').
+   9.0				15-Oct-2020		  Steven Xu			   rewrite the full logic. Change to incremental logic
 *******************************************************************************/
 
---v2.0
-Function get_hip_rev_status( l_serial_number varchar2) return varchar is
- l_status varchar2(100);
-begin
-  select status into l_status
-    from conforders.hip_revision
-      where serial_number = l_serial_number
-        and revision = (select max(revision)
-                          from conforders.hip_revision
-                            where serial_number = l_serial_number);
-  return upper(l_status);
- exception when others then
-  l_status := null;
-  return upper(l_status);
- end  get_hip_rev_status;
+	Function GET_HIP_REV_STATUS( l_serial_number varchar2) 
+		return varchar 
+	is
+		l_status varchar2(100);
+	begin
+		select status into l_status
+		from conforders.hip_revision
+		where 
+			serial_number = l_serial_number
+			and revision = 
+				(
+					select max(revision)
+					from conforders.hip_revision
+					where serial_number = l_serial_number
+				)
+		;
+		return upper(l_status);
+		
+		exception when others then
+			l_status := null;
+			return upper(l_status);
+	end GET_HIP_REV_STATUS;
+	
+	procedure REFRESH_ORD_CONF is  
+		begin
+			FND_FILE.PUT_LINE (FND_FILE.LOG,'Start deleting: ' || current_timestamp);
+			--DBMS_OUTPUT.PUT_LINE ('Start deleting: ' || current_timestamp);
+			
+			delete from XXCMIS.XXCMIS_CONF_ORD;
+		
+			--DBMS_OUTPUT.PUT_LINE ('Deleted all (' || sql%rowcount || ') records from order table. ' || current_timestamp);
+			FND_FILE.PUT_LINE (FND_FILE.LOG,'Deleted all (' || sql%rowcount || ') records from order table. ' || current_timestamp);
+			
+			insert into XXCMIS.XXCMIS_CONF_ORD 
+			select * From APPS.XXCMIS_CONF_ORD_V2;
+			
+			--DBMS_OUTPUT.PUT_LINE ('Inserted ' || sql%rowcount || ' records. ' || current_timestamp);
+			FND_FILE.PUT_LINE (FND_FILE.LOG,'Inserted ' || sql%rowcount || ' records. ' || current_timestamp);
 
-PROCEDURE MAIN (RETCODE       OUT NUMBER,
-                ERRBUF        OUT VARCHAR2) IS
+			COMMIT;	
+		exception
+			when others then
+				--DBMS_OUTPUT.PUT_LINE ('ERROR XXCMIS_ORD_CONF_PKG Error:' || sqlerrm);
+				FND_FILE.PUT_LINE (FND_FILE.LOG,'ERROR XXCMIS_ORD_CONF_PKG Error:' || sqlerrm);
+				rollback;
+		end;	
 
-    l_cnt number :=0;
-    l_line_status varchar2(200); --v2.0
-    l_hip_rev_status varchar2(100); --Added V5.0
+	procedure INCREMENT_ORD_CONF is  -- dev: 80 seconds
+		begin
+			FND_FILE.PUT_LINE (FND_FILE.LOG,'Start deleting: ' || current_timestamp);
+			--DBMS_OUTPUT.PUT_LINE ('Start deleting: ' || current_timestamp);
+			
+			delete from 
+				XXCMIS.XXCMIS_CONF_ORD
+			where 
+				LINE_ID not in (select LINE_ID FROM APPS.XXCMIS_CONF_ORD_V2)
+--				(STATUS = 'RETURN' and COMMITMENT_DATE < sysdate - 30) or
+--				(STATUS = 'CANCELLED' and COMMITMENT_DATE < sysdate - 30)
+			;
+		
+			--DBMS_OUTPUT.PUT_LINE ('Deleted ' || sql%rowcount || ' old records of CANCELLED and RETURN orders. ' || current_timestamp);
+			FND_FILE.PUT_LINE (FND_FILE.LOG,'Deleted ' || sql%rowcount || ' old records of CANCELLED and RETURN orders. ' || current_timestamp);
+			
+			merge into 
+				XXCMIS.XXCMIS_CONF_ORD tgt
+			using 
+				(
+					select 
+						*
+					from 
+						APPS.XXCMIS_CONF_ORD_V2
+					where
+						LAST_UPDATE_DATE > sysdate - 1/24 or 
+						SCAN_RECEIVED_DATE > sysdate - 7 or
+						DATE_SUBMITTED > sysdate - 7
+				) src
+			on 
+				(src.LINE_ID = tgt.LINE_ID)
+			when matched then
+				update set
+					tgt.ORDER_ID = src.ORDER_ID,
+					tgt.SURGEON_ID = src.SURGEON_ID,
+					tgt.SURGEON_TITLE = src.SURGEON_TITLE,
+					tgt.SURGEON_LAST_NAME = src.SURGEON_LAST_NAME,
+					tgt.SURGEON_FIRST_NAME = src.SURGEON_FIRST_NAME,
+					tgt.PATIENT_FIRST_NAME = src.PATIENT_FIRST_NAME,
+					tgt.PATIENT_LAST_NAME = src.PATIENT_LAST_NAME,
+					tgt.PATIENT_GENDER = src.PATIENT_GENDER,
+					tgt.PATIENT_DOB = src.PATIENT_DOB,
+					tgt.CATALOG_NUMBER = src.CATALOG_NUMBER,
+					tgt.UNIT_SELLING_PRICE = src.UNIT_SELLING_PRICE,
+					tgt.SERIAL_NUMBER = src.SERIAL_NUMBER,
+					--tgt.LINE_ID = src.LINE_ID,
+					tgt.PRODUCT_CATEGORY = src.PRODUCT_CATEGORY,
+					tgt.UDI_CATALOG = src.UDI_CATALOG,
+					tgt.PRODUCT_DESCRIPTION = src.PRODUCT_DESCRIPTION,
+					tgt.PATELLA_FLAG = src.PATELLA_FLAG,
+					tgt.SCHED_SURGERY_DATE = src.SCHED_SURGERY_DATE,
+					tgt.COMMITMENT_DATE = src.COMMITMENT_DATE,
+					tgt.SURGERY_LOCATION = src.SURGERY_LOCATION,
+					tgt.STATUS = src.STATUS,
+					tgt.IMPLANT_REQUEST_DATE = src.IMPLANT_REQUEST_DATE,
+					tgt.SCAN_RECEIVED_DATE = src.SCAN_RECEIVED_DATE,
+					tgt.SCAN_CP_FLAG = src.SCAN_CP_FLAG,
+					tgt.SHIPPED_DATE = src.SHIPPED_DATE,
+					tgt.REGION_CODE = src.REGION_CODE,
+					tgt.SALES_REP_NAME = src.SALES_REP_NAME,
+					tgt.TERRITORY_CODE = src.TERRITORY_CODE,
+					tgt.COUNTRY_CODE = src.COUNTRY_CODE,
+					tgt.RESCHEDULED_SURGERY_DATE = src.RESCHEDULED_SURGERY_DATE,
+					tgt.CURRENCY = src.CURRENCY,
+					tgt.HOSPITAL_NAME = src.HOSPITAL_NAME,
+					tgt.SALESREP_NUMBER = src.SALESREP_NUMBER,
+					tgt.LINE_TYPE = src.LINE_TYPE,
+					tgt.IRF_ID = src.IRF_ID,
+					tgt.PRODUCT_DESC_ORDCNF = src.PRODUCT_DESC_ORDCNF,
+					tgt.ORDER_DETAILS_ORDCNF = src.ORDER_DETAILS_ORDCNF,
+					tgt.ORDER_DETAILS2 = src.ORDER_DETAILS2,
+					tgt.ACTUAL_SURGERY_DATE = src.ACTUAL_SURGERY_DATE,
+					tgt.SERIAL_NUMBER_ORI = src.SERIAL_NUMBER_ORI,
+					tgt.ORDER_LINE_ROWID = src.ORDER_LINE_ROWID,
+					tgt.HEADER_ID = src.HEADER_ID,
+					tgt.INVENTORY_ITEM_ID = src.INVENTORY_ITEM_ID,
+					tgt.ORDERED_ITEM = src.ORDERED_ITEM,
+					tgt.ITEM_NUMBER = src.ITEM_NUMBER,
+					tgt.ORDCNF_FLAG = src.ORDCNF_FLAG,
+					tgt.ORDER_ORDCNF_FLAG = src.ORDER_ORDCNF_FLAG,
+					tgt.LAST_UPDATE_DATE = src.LAST_UPDATE_DATE,
+					tgt.SOLD_TO_CONTACT_ID = src.SOLD_TO_CONTACT_ID,
+					tgt.SHIP_TO_ORG_ID = src.SHIP_TO_ORG_ID,
+					tgt.SALESREP_ID = src.SALESREP_ID,
+					tgt.DATE_SUBMITTED = src.DATE_SUBMITTED			
+				where
+					src.LAST_UPDATE_DATE > tgt.LAST_UPDATE_DATE or
+					nvl(src.SCAN_RECEIVED_DATE,to_date(20000101,'yyyymmdd')) != nvl(tgt.SCAN_RECEIVED_DATE,to_date(20000101,'yyyymmdd')) or
+					nvl(src.DATE_SUBMITTED,to_date(20000101,'yyyymmdd')) != nvl(tgt.DATE_SUBMITTED,to_date(20000101,'yyyymmdd'))
+			when not matched then 	
+				insert (
+					ORDER_ID,
+					SURGEON_ID,
+					SURGEON_TITLE,
+					SURGEON_LAST_NAME,
+					SURGEON_FIRST_NAME,
+					PATIENT_FIRST_NAME,
+					PATIENT_LAST_NAME,
+					PATIENT_GENDER,
+					PATIENT_DOB,
+					CATALOG_NUMBER,
+					UNIT_SELLING_PRICE,
+					SERIAL_NUMBER,
+					LINE_ID,
+					PRODUCT_CATEGORY,
+					UDI_CATALOG,
+					PRODUCT_DESCRIPTION,
+					PATELLA_FLAG,
+					SCHED_SURGERY_DATE,
+					COMMITMENT_DATE,
+					SURGERY_LOCATION,
+					STATUS,
+					IMPLANT_REQUEST_DATE,
+					SCAN_RECEIVED_DATE,
+					SCAN_CP_FLAG,
+					SHIPPED_DATE,
+					REGION_CODE,
+					SALES_REP_NAME,
+					TERRITORY_CODE,
+					COUNTRY_CODE,
+					RESCHEDULED_SURGERY_DATE,
+					CURRENCY,
+					HOSPITAL_NAME,
+					SALESREP_NUMBER,
+					LINE_TYPE,
+					IRF_ID,
+					PRODUCT_DESC_ORDCNF,
+					ORDER_DETAILS_ORDCNF,
+					ORDER_DETAILS2,
+					ACTUAL_SURGERY_DATE,
+					SERIAL_NUMBER_ORI,
+					ORDER_LINE_ROWID,
+					HEADER_ID,
+					INVENTORY_ITEM_ID,
+					ORDERED_ITEM,
+					ITEM_NUMBER,
+					ORDCNF_FLAG,
+					ORDER_ORDCNF_FLAG,
+					LAST_UPDATE_DATE,
+					SOLD_TO_CONTACT_ID,
+					SHIP_TO_ORG_ID,
+					SALESREP_ID,
+					DATE_SUBMITTED
+				)
+				values (
+					src.ORDER_ID,
+					src.SURGEON_ID,
+					src.SURGEON_TITLE,
+					src.SURGEON_LAST_NAME,
+					src.SURGEON_FIRST_NAME,
+					src.PATIENT_FIRST_NAME,
+					src.PATIENT_LAST_NAME,
+					src.PATIENT_GENDER,
+					src.PATIENT_DOB,
+					src.CATALOG_NUMBER,
+					src.UNIT_SELLING_PRICE,
+					src.SERIAL_NUMBER,
+					src.LINE_ID,
+					src.PRODUCT_CATEGORY,
+					src.UDI_CATALOG,
+					src.PRODUCT_DESCRIPTION,
+					src.PATELLA_FLAG,
+					src.SCHED_SURGERY_DATE,
+					src.COMMITMENT_DATE,
+					src.SURGERY_LOCATION,
+					src.STATUS,
+					src.IMPLANT_REQUEST_DATE,
+					src.SCAN_RECEIVED_DATE,
+					src.SCAN_CP_FLAG,
+					src.SHIPPED_DATE,
+					src.REGION_CODE,
+					src.SALES_REP_NAME,
+					src.TERRITORY_CODE,
+					src.COUNTRY_CODE,
+					src.RESCHEDULED_SURGERY_DATE,
+					src.CURRENCY,
+					src.HOSPITAL_NAME,
+					src.SALESREP_NUMBER,
+					src.LINE_TYPE,
+					src.IRF_ID,
+					src.PRODUCT_DESC_ORDCNF,
+					src.ORDER_DETAILS_ORDCNF,
+					src.ORDER_DETAILS2,
+					src.ACTUAL_SURGERY_DATE,
+					src.SERIAL_NUMBER_ORI,
+					src.ORDER_LINE_ROWID,
+					src.HEADER_ID,
+					src.INVENTORY_ITEM_ID,
+					src.ORDERED_ITEM,
+					src.ITEM_NUMBER,
+					src.ORDCNF_FLAG,
+					src.ORDER_ORDCNF_FLAG,
+					src.LAST_UPDATE_DATE,
+					src.SOLD_TO_CONTACT_ID,
+					src.SHIP_TO_ORG_ID,
+					src.SALESREP_ID,
+					src.DATE_SUBMITTED
+				)
+			;
+			
+			--DBMS_OUTPUT.PUT_LINE ('Merged ' || sql%rowcount || ' records. ' || current_timestamp);
+			FND_FILE.PUT_LINE (FND_FILE.LOG,'Merged ' || sql%rowcount || ' records. ' || current_timestamp);
+			COMMIT;
+			
+		exception
+			when others then
+				--DBMS_OUTPUT.PUT_LINE ('ERROR XXCMIS_ORD_CONF_PKG Error:' || sqlerrm);
+				FND_FILE.PUT_LINE (FND_FILE.LOG,'ERROR XXCMIS_ORD_CONF_PKG Error:' || sqlerrm);
+				rollback;
+		end;		
 
-	--Add Start V5.0 --Added bulk collection to increase performace.
+	procedure MAIN(
+		RETCODE       out number,
+		ERRBUF        out varchar2) 
+	is
+		begin
+			FND_FILE.PUT_LINE (FND_FILE.LOG,'=========Calling populate order table proc=============');
+			--DBMS_OUTPUT.PUT_LINE ('=========Calling populate order table proc=============:' || current_timestamp);
 
-    TYPE XXMIS_BLUK IS TABLE OF CONFORDERS.XXCMIS_CONF_ORDERS_V%ROWTYPE;
-    l_data XXMIS_BLUK;
+			REFRESH_ORD_CONF();
 
-    TYPE XXMIS_BLUK1 IS TABLE OF APPS.XXCMIS_G3_ORDERS_CONFORMIS_V%ROWTYPE;
-    l_data1 XXMIS_BLUK1;
-
-    BatchSize number := 1000;
-
-	--Add End V5.0
-
-    CURSOR C1 is
-    select * 	--Added V5.0
-    --Start Commented for V5.0
-/*          ORDER_ID, SURGEON_ID, SURGEON_TITLE, SURGEON_LAST_NAME, SURGEON_FIRST_NAME, PATIENT_FIRST_NAME, PATIENT_LAST_NAME, PATIENT_GENDER, PATIENT_DOB,
-       CATALOG_NUMBER, UNIT_SELLING_PRICE, SERIAL_NUMBER, LINE_ID, PRODUCT_CATEGORY, UDI_CATALOG, PRODUCT_DESCRIPTION, PATELLA_FLAG, SCHED_SURGERY_DATE,
-        COMMITMENT_DATE, SURGERY_LOCATION, STATUS, IMPLANT_REQUEST_DATE, SCAN_RECEIVED_DATE, SCAN_CP_FLAG,
-       SHIPPED_DATE, REGION_CODE, SALES_REP_NAME, TERRITORY_CODE, COUNTRY_CODE,
-       ACTUAL_SURGERY_DATE, CURRENCY, HOSPITAL_NAME, SALESREP_NUMBER, LINE_TYPE
-       ,IRF_ID --Added for V4.0
-       */
-	   --End Commented for V5.0
-       from CONFORDERS.XXCMIS_CONF_ORDERS_V d
-       where d.line_type not in ('HIP Procedure','HIP Alt Kit to Sales Rep','HIP RMA Alt Kit SRep Rec Only', 'HIP RMA Proc Cust Rec ',
-                               'HIP Alt Kit Item to Customer', 'HIP Alt Kit to Sales Rep','HIP Patient Specific') -- Added line type HIP Patient Specific to display only the HIP Design line --07/02/2018
-        --where line_type_id not in  (1207, 1208, 1209);
-         /*     --Comment Started V6.0
-         --Add Start V5.0
-        AND not exists (select 1
-                        from
-                            conforders.irf xxcmis_irf,
-                            xxcmis_irf_orders_status_tbl xiost
-                        where xiost.irfid = xxcmis_irf.id
-                        and xiost.header_id = d.header_id
-                        and xxcmis_irf.product = 'iTotal Identity CR')
-        --Added End V5.0
-        */      --Comment Ended V6.0
-        --Add Start V6.0
-        AND not exists (select 1
-                        from
-                            apps.oe_order_lines_all oola,
-                            apps.MTL_SYSTEM_ITEMS_B MST,
-                            apps.mtl_item_categories micat,
-                            apps.mtl_categories mcat,
-                            apps.mtl_category_sets mcats,
-                            apps.mtl_item_categories micat1,
-                            apps.mtl_categories mcat1,
-                            apps.mtl_category_sets mcats1
-                        WHERE mcats.category_set_name = 'Inventory'
-                        AND micat.category_set_id = mcats.category_set_id
-                        AND micat.category_id = mcat.category_id
-                        AND MST.inventory_item_id = micat.inventory_item_id
-                        AND MST.organization_id =  micat.organization_id
-                        AND mcat.SEGMENT1 = 'WIP CLASSIFICATION'
-                        AND mcat.SEGMENT2 = 'PATIENT SPECIFIC - KNEE IDENTITY'
-                        AND mcats1.category_set_name = 'OrdCnf Order Status Include'
-                        AND micat1.category_set_id = mcats1.category_set_id
-                        AND micat1.category_id = mcat1.category_id
-                        AND MST.inventory_item_id = micat1.inventory_item_id
-                        AND MST.organization_id =  micat1.organization_id
-                        AND oola.inventory_item_id = mst.inventory_item_id
-                        AND mcat1.SEGMENT1 = 'Yes'
-                        AND oola.flow_status_code NOT IN ('RETURN', 'CANCELLED')
-                        AND oola.header_id = d.header_id)
-        --Add End V6.0
-        ;
-
-       --Add Start V5.0
-       CURSOR G3_ORDER_C IS
-            select *
-           from APPS.XXCMIS_G3_ORDERS_CONFORMIS_V;
-       --Add End V5.0
-
-  BEGIN
-        FND_FILE.PUT_LINE (FND_FILE.LOG,'=========Calling populate order table proc=============');
-
-        DELETE XXCMIS.XXCMIS_CONF_ORD;
-        FND_FILE.PUT_LINE(FND_FILE.LOG,'Deleted table XCMIS_CONF_ORD ');
-
-        --Start Commented for V5.0
-          /*FOR x IN C1 LOOP
-
-                      /*   FND_GLOBAL.APPS_INITIALIZE (PKB_USER_ID, PKB_RESP_ID, PKB_RESP_APPL_ID);
-                         MO_GLOBAL.INIT ('OM');
-                         MO_GLOBAL.SET_POLICY_CONTEXT ('S', 82);*//*
-
-                     --   FND_FILE.PUT_LINE (FND_FILE.Log,'Pass Order Number==>'||HEADER_REC.ORDER_NUMBER);
-                      --  FND_FILE.PUT_LINE (FND_FILE.Log,'Org Id==>'||HEADER_REC.ORG_ID);
-
-             --------v2.0 Start-----
-          l_line_status := NULL; -- v3.0
-         if x.status = 'PENDING_DESIGN_APPROVAL' then
-               if  get_hip_rev_status(x.SERIAL_NUMBER) = 'PENDING' then
-                 l_line_status := 'Pending Surgeon Review';--'Pending Surgeon Execution';
-               elsif get_hip_rev_status(x.SERIAL_NUMBER) = 'DECLINED' then
-                 l_line_status := 'Re-Design';
-               elsif get_hip_rev_status(x.SERIAL_NUMBER) = 'APPROVED' then
-                 l_line_status := 'Design Approved by Surgeon';
-               else
-                  l_line_status := x.status; --v3.0 added
-               end if;
-             else
-                l_line_status := x.status;
-             end if;
-         -------V2.0 End--------
-
-               INSERT INTO XXCMIS.XXCMIS_CONF_ORD
-                                                 (ORDER_ID,
-                                                 SURGEON_ID,
-                                                 SURGEON_TITLE,
-                                                 SURGEON_LAST_NAME,
-                                                 SURGEON_FIRST_NAME,
-                                                 PATIENT_FIRST_NAME,
-                                                 PATIENT_LAST_NAME,
-                                                 PATIENT_GENDER,
-                                                 PATIENT_DOB,
-                                                 CATALOG_NUMBER,
-                                                 UNIT_SELLING_PRICE,
-                                                 SERIAL_NUMBER,
-                                                 LINE_ID,
-                                                 PRODUCT_CATEGORY,
-                                                 UDI_CATALOG,
-                                                 PRODUCT_DESCRIPTION,
-                                                 PATELLA_FLAG,
-                                                 SCHED_SURGERY_DATE,
-                                                 COMMITMENT_DATE,
-                                                 SURGERY_LOCATION,
-                                                 STATUS,
-                                                 IMPLANT_REQUEST_DATE,
-                                                 SCAN_RECEIVED_DATE,
-                                                 SCAN_CP_FLAG,
-                                                 SHIPPED_DATE,
-                                                 REGION_CODE,
-                                                 SALES_REP_NAME,
-                                                 TERRITORY_CODE,
-                                                 COUNTRY_CODE,
-                                                 ACTUAL_SURGERY_DATE,
-                                                 CURRENCY,
-                                                 HOSPITAL_NAME,
-                                                 SALESREP_NUMBER,
-                                                 LINE_TYPE
-                                                 ,IRF_ID --Added V4.0
-                                                 )
-                                          VALUES(x.ORDER_ID,
-                                                 x.SURGEON_ID,
-                                                 x.SURGEON_TITLE,
-                                                 x.SURGEON_LAST_NAME,
-                                                 x.SURGEON_FIRST_NAME,
-                                                 x.PATIENT_FIRST_NAME,
-                                                 x.PATIENT_LAST_NAME,
-                                                 x.PATIENT_GENDER,
-                                                 x.PATIENT_DOB,
-                                                 x.CATALOG_NUMBER,
-                                                 x.UNIT_SELLING_PRICE,
-                                                 x.SERIAL_NUMBER,
-                                                 x.LINE_ID,
-                                                 x.PRODUCT_CATEGORY,
-                                                 x.UDI_CATALOG,
-                                                 x.PRODUCT_DESCRIPTION,
-                                                 x.PATELLA_FLAG,
-                                                 x.SCHED_SURGERY_DATE,
-                                                 x.COMMITMENT_DATE,
-                                                 x.SURGERY_LOCATION,
-                                                 l_line_status,     --v2.0 Changed from "x.STATUS"
-                                                 x.IMPLANT_REQUEST_DATE,
-                                                 x.SCAN_RECEIVED_DATE,
-                                                 x.SCAN_CP_FLAG,
-                                                 x.SHIPPED_DATE,
-                                                 x.REGION_CODE,
-                                                 x.SALES_REP_NAME,
-                                                 x.TERRITORY_CODE,
-                                                 x.COUNTRY_CODE,
-                                                 x.ACTUAL_SURGERY_DATE,
-                                                 x.CURRENCY,
-                                                 x.HOSPITAL_NAME,
-                                                 x.SALESREP_NUMBER,
-                                                 x.LINE_TYPE
-                                                 ,x.IRF_ID --Added V4.0
-                                                 );
-                   l_cnt := l_cnt + 1;
-        end loop;*/
-        --End Commented for V5.0
-
-       --Added Start V5.0
-       fnd_file.put_line(fnd_file.log, 'Before Non G3 Record Insert. ' || current_timestamp);
-      OPEN c1;
-
-        LOOP
-            FETCH c1 BULK COLLECT INTO l_data LIMIT batchsize;
-            FOR j IN 1..l_data.count LOOP
-                IF l_data(j).status = 'PENDING_DESIGN_APPROVAL' THEN
-                    l_hip_rev_status := get_hip_rev_status(l_data(j).serial_number);
-                    IF l_hip_rev_status = 'PENDING' THEN
-                        l_data(j).status := 'Pending Surgeon Review';
-                    ELSIF l_hip_rev_status = 'DECLINED' THEN
-                        l_data(j).status := 'Re-Design';
-                    ELSIF l_hip_rev_status = 'APPROVED' THEN
-                        l_data(j).status := 'Design Approved by Surgeon';
-                    END IF;
-                END IF;
-            END LOOP;
-
-        FORALL x IN l_data.first .. l_data.last
-        INSERT INTO XXCMIS.XXCMIS_CONF_ORD(ORDER_ID,
-                                     SURGEON_ID,
-                                     SURGEON_TITLE,
-                                     SURGEON_LAST_NAME,
-                                     SURGEON_FIRST_NAME,
-                                     PATIENT_FIRST_NAME,
-                                     PATIENT_LAST_NAME,
-                                     PATIENT_GENDER,
-                                     PATIENT_DOB,
-                                     CATALOG_NUMBER,
-                                     UNIT_SELLING_PRICE,
-                                     SERIAL_NUMBER,
-                                     LINE_ID,
-                                     PRODUCT_CATEGORY,
-                                     UDI_CATALOG,
-                                     PRODUCT_DESCRIPTION,
-                                     PATELLA_FLAG,
-                                     SCHED_SURGERY_DATE,
-                                     COMMITMENT_DATE,
-                                     SURGERY_LOCATION,
-                                     STATUS,
-                                     IMPLANT_REQUEST_DATE,
-                                     SCAN_RECEIVED_DATE,
-                                     SCAN_CP_FLAG,
-                                     SHIPPED_DATE,
-                                     REGION_CODE,
-                                     SALES_REP_NAME,
-                                     TERRITORY_CODE,
-                                     COUNTRY_CODE,
-                                     --ACTUAL_SURGERY_DATE, --Commented by 8.0
-                                     RESCHEDULED_SURGERY_DATE, --Added by 8.0
-                                     CURRENCY,
-                                     HOSPITAL_NAME,
-                                     SALESREP_NUMBER,
-                                     LINE_TYPE
-                                     ,IRF_ID
-                                     ,ACTUAL_SURGERY_DATE
-                                     )
-              VALUES (l_data(x).ORDER_ID,
-                                     l_data(x).SURGEON_ID,
-                                     l_data(x).SURGEON_TITLE,
-                                     l_data(x).SURGEON_LAST_NAME,
-                                     l_data(x).SURGEON_FIRST_NAME,
-                                     l_data(x).PATIENT_FIRST_NAME,
-                                     l_data(x).PATIENT_LAST_NAME,
-                                     l_data(x).PATIENT_GENDER,
-                                     l_data(x).PATIENT_DOB,
-                                     l_data(x).CATALOG_NUMBER,
-                                     l_data(x).UNIT_SELLING_PRICE,
-                                     l_data(x).SERIAL_NUMBER,
-                                     l_data(x).LINE_ID,
-                                     l_data(x).PRODUCT_CATEGORY,
-                                     l_data(x).UDI_CATALOG,
-                                     l_data(x).PRODUCT_DESCRIPTION,
-                                     l_data(x).PATELLA_FLAG,
-                                     l_data(x).SCHED_SURGERY_DATE,
-                                     l_data(x).COMMITMENT_DATE,
-                                     l_data(x).SURGERY_LOCATION,
-                                     l_data(x).status,
-                                     l_data(x).IMPLANT_REQUEST_DATE,
-                                     l_data(x).SCAN_RECEIVED_DATE,
-                                     l_data(x).SCAN_CP_FLAG,
-                                     l_data(x).SHIPPED_DATE,
-                                     l_data(x).REGION_CODE,
-                                     l_data(x).SALES_REP_NAME,
-                                     l_data(x).TERRITORY_CODE,
-                                     l_data(x).COUNTRY_CODE,
-                                     --l_data(x).ACTUAL_SURGERY_DATE, --Commented by 8.0
-                                     l_data(x).RESCHEDULED_SURGERY_DATE, --Added by 8.0
-                                     l_data(x).CURRENCY,
-                                     l_data(x).HOSPITAL_NAME,
-                                     l_data(x).SALESREP_NUMBER,
-                                     l_data(x).LINE_TYPE,
-                                     l_data(x).IRF_ID
-                                     ,l_data(x).ACTUAL_SURGERY_DATE --Commented by 8.0
-                                     );
-
-               l_cnt := l_cnt + 1;
-    exit when C1%notfound;
-    end loop;
-    fnd_file.put_line(fnd_file.log, 'After Non G3 Record Insert. ' || current_timestamp);
-    FND_FILE.PUT_LINE (FND_FILE.LOG,'Total Number of Non G3 Records inserted : '||l_cnt);
-
-         open G3_ORDER_C;
-          loop
-          FETCH G3_ORDER_C BULK COLLECT INTO l_data1 LIMIT BatchSize;
-
-            FOR j1 IN 1..l_data1.count LOOP
-                IF l_data1(j1).status = 'PENDING_DESIGN_APPROVAL' THEN
-                    l_hip_rev_status := get_hip_rev_status(l_data1(j1).serial_number);
-                    IF l_hip_rev_status = 'PENDING' THEN
-                        l_data1(j1).status := 'Pending Surgeon Review';
-                    ELSIF l_hip_rev_status = 'DECLINED' THEN
-                        l_data1(j1).status := 'Re-Design';
-                    ELSIF l_hip_rev_status = 'APPROVED' THEN
-                        l_data1(j1).status := 'Design Approved by Surgeon';
-                    END IF;
-                END IF;
-            END LOOP;
-
-              FORALL x1 IN l_data1.first .. l_data1.last
-              INSERT INTO XXCMIS.XXCMIS_CONF_ORD
-                                    (ORDER_ID,
-                                     SURGEON_ID,
-                                     SURGEON_TITLE,
-                                     SURGEON_LAST_NAME,
-                                     SURGEON_FIRST_NAME,
-                                     PATIENT_FIRST_NAME,
-                                     PATIENT_LAST_NAME,
-                                     PATIENT_GENDER,
-                                     PATIENT_DOB,
-                                     CATALOG_NUMBER,
-                                     UNIT_SELLING_PRICE,
-                                     SERIAL_NUMBER,
-                                     LINE_ID,
-                                     PRODUCT_CATEGORY,
-                                     UDI_CATALOG,
-                                     PRODUCT_DESCRIPTION,
-                                     PATELLA_FLAG,
-                                     SCHED_SURGERY_DATE,
-                                     COMMITMENT_DATE,
-                                     SURGERY_LOCATION,
-                                     STATUS,
-                                     IMPLANT_REQUEST_DATE,
-                                     SCAN_RECEIVED_DATE,
-                                     SCAN_CP_FLAG,
-                                     SHIPPED_DATE,
-                                     REGION_CODE,
-                                     SALES_REP_NAME,
-                                     TERRITORY_CODE,
-                                     COUNTRY_CODE,
-                                     --ACTUAL_SURGERY_DATE,    --Commented by 8.0
-                                     RESCHEDULED_SURGERY_DATE, --Added by 8.0
-                                     CURRENCY,
-                                     HOSPITAL_NAME,
-                                     SALESREP_NUMBER,
-                                     LINE_TYPE
-                                     ,IRF_ID
-                                     ,PRODUCT_DESC_ORDCNF
-                                     ,ORDER_DETAILS_ORDCNF
-                                     ,ORDER_DETAILS2  --Added 7.0
-                                     ,ACTUAL_SURGERY_DATE --Added by 8.0
-                                     )
-              VALUES (l_data1(x1).ORDER_ID,
-                                     l_data1(x1).SURGEON_ID,
-                                     l_data1(x1).SURGEON_TITLE,
-                                     l_data1(x1).SURGEON_LAST_NAME,
-                                     l_data1(x1).SURGEON_FIRST_NAME,
-                                     l_data1(x1).PATIENT_FIRST_NAME,
-                                     l_data1(x1).PATIENT_LAST_NAME,
-                                     l_data1(x1).PATIENT_GENDER,
-                                     l_data1(x1).PATIENT_DOB,
-                                     l_data1(x1).CATALOG_NUMBER,
-                                     l_data1(x1).UNIT_SELLING_PRICE,
-                                     l_data1(x1).SERIAL_NUMBER,
-                                     l_data1(x1).LINE_ID,
-                                     l_data1(x1).PRODUCT_CATEGORY,
-                                     l_data1(x1).UDI_CATALOG,
-                                     l_data1(x1).PRODUCT_DESCRIPTION,
-                                     l_data1(x1).PATELLA_FLAG,
-                                     l_data1(x1).SCHED_SURGERY_DATE,
-                                     l_data1(x1).COMMITMENT_DATE,
-                                     l_data1(x1).SURGERY_LOCATION,
-                                     l_data1(x1).status,
-                                     l_data1(x1).IMPLANT_REQUEST_DATE,
-                                     l_data1(x1).SCAN_RECEIVED_DATE,
-                                     l_data1(x1).SCAN_CP_FLAG,
-                                     l_data1(x1).SHIPPED_DATE,
-                                     l_data1(x1).REGION_CODE,
-                                     l_data1(x1).SALES_REP_NAME,
-                                     l_data1(x1).TERRITORY_CODE,
-                                     l_data1(x1).COUNTRY_CODE,
-                                     --l_data1(x1).ACTUAL_SURGERY_DATE,      --Commented by 8.0
-                                     l_data1(x1).RESCHEDULED_SURGERY_DATE, --Added by 8.0
-                                     l_data1(x1).CURRENCY,
-                                     l_data1(x1).HOSPITAL_NAME,
-                                     l_data1(x1).SALESREP_NUMBER,
-                                     l_data1(x1).LINE_TYPE,
-                                     l_data1(x1).IRF_ID
-                                     ,l_data1(x1).PRODUCT_DESC_ORDCNF
-                                     ,l_data1(x1).ORDER_DETAILS_ORDCNF
-                                     ,l_data1(x1).ORDER_DETAILS_2_ORDCNF --Added 7.0
-                                     ,l_data1(x1).ACTUAL_SURGERY_DATE      --Added by 8.0
-                                     );
-
-               l_cnt := l_cnt + 1;
-    exit when G3_ORDER_C%notfound;
-    end loop;
-    fnd_file.put_line(fnd_file.log, 'After G3 Record Insert. ' || current_timestamp);
-    --Added End V5.0
-
-     FND_FILE.PUT_LINE (FND_FILE.LOG,'Total Number of Records inserted : '||l_cnt);
-     COMMIT;
-      FND_FILE.PUT_LINE (FND_FILE.LOG,'End Concurrent Excution... ' || CURRENT_TIMESTAMP); --Added V5.0
-   FND_FILE.PUT_LINE (
-      FND_FILE.LOG,'-------------------------End Populate Orders table------------------------------------------------------------------');
-
-        EXCEPTION
-           WHEN OTHERS
-           THEN
-              FND_FILE.PUT_LINE (FND_FILE.LOG,'ERROR XXCMIS_ORD_CONF_PKG Error:' || sqlerrm);
-        END;
-END XXCMIS_ORD_CONF_PKG;
+			--DBMS_OUTPUT.PUT_LINE ('End Concurrent Excution... ' || current_timestamp);
+			--DBMS_OUTPUT.PUT_LINE ('==========END of populate order table proc=============:' || current_timestamp);
+			FND_FILE.PUT_LINE (FND_FILE.LOG,'=========END of populate order table proc=============');
+			
+		exception
+			when others then
+				--DBMS_OUTPUT.PUT_LINE ('ERROR XXCMIS_ORD_CONF_PKG Error:' || sqlerrm);
+				FND_FILE.PUT_LINE (FND_FILE.LOG,'ERROR XXCMIS_ORD_CONF_PKG Error:' || sqlerrm);
+		end;
+end XXCMIS_ORD_CONF_PKG;

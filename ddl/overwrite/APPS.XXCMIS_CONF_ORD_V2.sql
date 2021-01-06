@@ -1,10 +1,5 @@
---create materialized view log on ONT.OE_ORDER_LINES_ALL with rowid;
-create materialized view CONFORDERS.XXCMIS_CONF_ORD_MV -- replacing XXCMIS.XXCMIS_ORD_CONF
-    parallel
-    build immediate
-    refresh force
-		next sysdate + 1/24/20
-    as 
+create view APPS.XXCMIS_CONF_ORD_V2 -- replacing APPS.XXCMIS_CONF_ORD_V
+as
 with order_detail as (
 	select
 		ola.ROWID as ORDER_LINE_ROWID,
@@ -25,6 +20,7 @@ with order_detail as (
 		ola.SHIP_TO_ORG_ID,
 		ola.SALESREP_ID,
 		ola.ORG_ID,
+		ola.LAST_UPDATE_DATE,
 		msi.CATALOG,
 		msi.ITEM_NUMBER,
 		msi.ITEM_DESCRIPTION,
@@ -98,7 +94,12 @@ SELECT
 	ola.ORDERED_ITEM,
 	ola.ITEM_NUMBER,
 	ola.ORDCNF_FLAG,
-	ola.ORDER_ORDCNF_FLAG
+	ola.ORDER_ORDCNF_FLAG,
+	ola.LAST_UPDATE_DATE,
+	oha.SOLD_TO_CONTACT_ID,
+	ola.SHIP_TO_ORG_ID,
+	ola.SALESREP_ID,
+	rev.DATE_SUBMITTED	
 from
         APPS.OE_ORDER_HEADERS_ALL oha
     left outer join
@@ -130,18 +131,11 @@ where
 	and nvl(msi_lkup.MEANING, 'NOCAT') not like 'PATELLA%'
 	and 
 		( 	ola.FLOW_STATUS_CODE not in ('CLOSED', 'CANCELLED')
-			or (ola.FLOW_STATUS_CODE = 'CLOSED' and nvl(ola.INVOICED_QUANTITY,1) > 0 ) --and ola.ACTUAL_SHIPMENT_DATE >= sysdate - 30)
-			or (ola.FLOW_STATUS_CODE = 'CLOSED' and ola.INVOICED_QUANTITY <= 0 and ola.SCHEDULE_SHIP_DATE >= sysdate - 30)
-			or (ola.FLOW_STATUS_CODE = 'CANCELLED' and ola.SCHEDULE_SHIP_DATE >= sysdate - 30)
+			or (ola.FLOW_STATUS_CODE = 'CLOSED' and nvl(ola.INVOICED_QUANTITY,1) > 0 ) --All CLOSED records (not returned)
+			or (ola.FLOW_STATUS_CODE = 'CLOSED' and ola.INVOICED_QUANTITY <= 0 and ola.SCHEDULE_SHIP_DATE >= sysdate - 30) --returned records in last 30 days
+			or (ola.FLOW_STATUS_CODE = 'CANCELLED' and ola.SCHEDULE_SHIP_DATE >= sysdate - 30) -- cancelled records in last 30 days
 		)
 ;
 
-create index CONFORDERS.CONFVIEW_ORDER_ID_IDX on CONFORDERS.XXCMIS_CONF_ORD_MV(ORDER_ID) tablespace CONFORMIS;
-create unique index CONFORDERS.CONFVIEW_LINE_ID_IDX on CONFORDERS.XXCMIS_CONF_ORD_MV(LINE_ID) tablespace CONFORMIS;
-create index CONFORDERS.CONFVIEW_SALESREP_NUMBER_IDX on CONFORDERS.XXCMIS_CONF_ORD_MV(SALESREP_NUMBER) tablespace CONFORMIS;
-create index CONFORDERS.CONFVIEW_SERIAL_NUMBER_IDX on CONFORDERS.XXCMIS_CONF_ORD_MV(SERIAL_NUMBER) tablespace CONFORMIS;
-create index CONFORDERS.CONFVIEW_SERIAL_NUMBER_ORI_IDX on CONFORDERS.XXCMIS_CONF_ORD_MV(SERIAL_NUMBER_ORI) tablespace CONFORMIS;
-create index CONFORDERS.CONFVIEW_STATUS_IDX on CONFORDERS.XXCMIS_CONF_ORD_MV(STATUS) tablespace CONFORMIS;
-create index CONFORDERS.CONFVIEW_SURGEON_ID_IDX on CONFORDERS.XXCMIS_CONF_ORD_MV(SURGEON_ID) tablespace CONFORMIS;
 
 
