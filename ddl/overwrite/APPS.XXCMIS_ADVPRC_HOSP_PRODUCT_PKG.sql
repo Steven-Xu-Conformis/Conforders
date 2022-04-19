@@ -30,12 +30,15 @@ as
    ---------        --------------      ---------------         ------------------------------------
    1.0              11-NOV-2021       	Steven Xu             	Initial Version
    1.1				11-MAR-2022			Steven Xu				Added update query to set all nulls to 0
+   1.2				12-APR-2022			Steven Xu				Changed logic to include OUS hospitals
+																break the query into 2 parts for performance
 *******************************************************************************/
 	procedure REFRESH_HOSP_PRODUCT is  
 			v_in_clause varchar2(4000);
             v_full_sql varchar2(4000);
 			v_update_clause varchar2(4000);
 			v_update_sql varchar2(4000);
+			v_pre_sql varchar2(4000);
 		begin
 			select
 				listagg('''' || SEGMENT1 || ''' as ' || SEGMENT1, ',')  WITHIN GROUP (ORDER BY SEGMENT1) into v_in_clause
@@ -62,73 +65,99 @@ as
 				update XXCMIS_TEMP_ADVPRC set
 				}' || v_update_clause;
 				
-			 v_full_sql := q'{
+			v_pre_sql := q'{
+create table XXCMIS_ADVPRC_PRICELIST_ITEM as
+select
+    qll.LIST_HEADER_ID as PRICE_LIST_ID,
+	qpa.PRODUCT_ATTRIBUTE,
+    msib.INVENTORY_ITEM_ID
+--    ordcnf_cat.SEGMENT1 as CATEGORY
+from
+	QP_LIST_LINES qll
+	join QP_PRICING_ATTRIBUTES qpa on qll.LIST_LINE_ID = qpa.LIST_LINE_ID
+	left outer join MTL_ITEM_CATEGORIES mic on 
+		case when qpa.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE2' then to_number(qpa.PRODUCT_ATTR_VALUE) end = mic.CATEGORY_ID
+		and mic.ORGANIZATION_ID = 84
+	left outer join MTL_SYSTEM_ITEMS_B msib on 
+		case 
+			when qpa.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE1' then to_number(qpa.PRODUCT_ATTR_VALUE)
+			when qpa.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE2' then mic.INVENTORY_ITEM_ID
+			--when qpa.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE3' then msib.INVENTORY_ITEM_ID 
+		end = msib.INVENTORY_ITEM_ID 
+		and msib.ORGANIZATION_ID = 84
+where
+	(SYSDATE) BETWEEN NVL((QLL.START_DATE_ACTIVE),(SYSDATE)) AND NVL((QLL.END_DATE_ACTIVE),(SYSDATE+1))
+	AND (qpa.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE3' or msib.SEGMENT1 is not null)			
+			}';
+			
+			v_full_sql := q'{
 create table XXCMIS_TEMP_ADVPRC as
 with PARTY_GROUPING as (
 	select
 		GROUP_HP.PARTY_ID as GROUP_PARTY_ID,
-		HP.PARTY_ID as CUST_PARTY_ID,
-		HP.PARTY_NAME as CUSTOMER_NAME
+		HP.PARTY_ID as HOSPITAL_ID,
+		HP.PARTY_NAME as HOSPITAL
 	from
-		HZ_PARTIES GROUP_HP
-		join HZ_CUST_ACCOUNTS HCA on GROUP_HP.PARTY_ID = HCA.PARTY_ID -- for group account status
-		join HZ_RELATIONSHIPS HR on GROUP_HP.PARTY_ID = HR.OBJECT_ID
-		join HZ_PARTIES HP on HR.SUBJECT_ID = HP.PARTY_ID
-		join FND_LOOKUP_VALUES FLV on HR.RELATIONSHIP_CODE = FLV.LOOKUP_CODE and FLV.LOOKUP_TYPE = 'PARTY_RELATIONS_TYPE'	
-	where
-		HCA.CUSTOMER_CLASS_CODE is not NULL
-		and HCA.STATUS = 'A'
-		and FLV.MEANING = 'Customer Participating'
-		and FLV.ENABLED_FLAG = 'Y'
-		and TRUNC(SYSDATE) BETWEEN TRUNC(NVL(FLV.START_DATE_ACTIVE,SYSDATE)) AND TRUNC(NVL(FLV.END_DATE_ACTIVE,SYSDATE))
-		and HR.END_DATE >= TRUNC(SYSDATE)
-		and HR.STATUS ='A'
+        HZ_PARTIES HP 
+        left outer join HZ_RELATIONSHIPS HR  on 
+                HR.SUBJECT_ID = HP.PARTY_ID
+                and HR.RELATIONSHIP_CODE = 'PARTICIPATING' 
+				and HR.END_DATE >= sysdate
+				and HR.STATUS ='A'
+		left outer join HZ_PARTIES GROUP_HP on GROUP_HP.PARTY_ID = HR.OBJECT_ID
+		left outer join HZ_CUST_ACCOUNTS HCA on 
+			GROUP_HP.PARTY_ID = HCA.PARTY_ID -- for group account status
+			and HCA.CUSTOMER_CLASS_CODE is not NULL
+			and HCA.STATUS = 'A'
+), PARTY_PRICE_LIST as (
+	select distinct
+		pg.GROUP_PARTY_ID,
+        pg.HOSPITAL_ID,
+        pg.HOSPITAL,
+		nvl(adv_prc.GRP_PRICE_LIST_ID, site_use.PRICE_LIST_ID) as PRICE_LIST_ID,
+		loc.COUNTRY
+	from
+		PARTY_GROUPING pg
+		left outer join XXCMIS_ADVPRICE_GRP_PRECEDENCE adv_prc on 
+            (adv_prc.GRP_PARTY_ID = pg.GROUP_PARTY_ID or adv_prc.CUST_PARTY_ID = pg.HOSPITAL_ID) 
+            and adv_prc.ACTIVE = 'YES'
+            AND (SYSDATE) BETWEEN NVL((ADV_PRC.START_DATE),(SYSDATE)) AND NVL((ADV_PRC.END_DATE),(SYSDATE+1))
+		join HZ_PARTY_SITES ps on ps.PARTY_ID = pg.HOSPITAL_ID	
+		join HZ_LOCATIONS loc on ps.LOCATION_ID = loc.LOCATION_ID
+		join HZ_CUST_ACCT_SITES_ALL cas on cas.PARTY_SITE_ID = ps.PARTY_SITE_ID
+		join HZ_CUST_SITE_USES_ALL site_use on site_use.CUST_ACCT_SITE_ID = cas.CUST_ACCT_SITE_ID
 )
 select 
 	*
 from (
-
 	select
-		nvl(cust_hp.PARTY_ID, pg.CUST_PARTY_ID) as HOSPITAL_ID,
-		nvl(cust_hp.PARTY_NAME, pg.CUSTOMER_NAME) as HOSPITAL,
-		ordcnf_cat.SEGMENT1 as CATEGORY
+		adv_prc.HOSPITAL_ID as HOSPITAL_ID,
+		adv_prc.HOSPITAL as HOSPITAL,
+        ordcnf_cat.SEGMENT1 as CATEGORY
 	from 
-		XXCMIS_ADVPRICE_GRP_PRECEDENCE adv_prc
-		join QP_LIST_HEADERS_TL qlh on adv_prc.GRP_PRICE_LIST_ID = qlh.LIST_HEADER_ID
-		join QP_LIST_LINES qll on qlh.LIST_HEADER_ID = qll.LIST_HEADER_ID
-		join QP_PRICING_ATTRIBUTES qpa on qll.LIST_LINE_ID = qpa.LIST_LINE_ID
-		left outer join MTL_ITEM_CATEGORIES mic on 
-			case when qpa.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE2' then to_number(qpa.PRODUCT_ATTR_VALUE) end = mic.CATEGORY_ID
-			and mic.ORGANIZATION_ID = 84
-		left outer join MTL_SYSTEM_ITEMS_B msib on 
-			case 
-				when qpa.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE1' then to_number(qpa.PRODUCT_ATTR_VALUE)
-				when qpa.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE2' then mic.INVENTORY_ITEM_ID
-			end = msib.INVENTORY_ITEM_ID 
-			and msib.ORGANIZATION_ID = 84
-		left outer join PARTY_GROUPING pg on adv_prc.GRP_PARTY_ID = pg.GROUP_PARTY_ID
-		left outer join HZ_PARTIES cust_hp on adv_prc.CUST_PARTY_ID = cust_hp.PARTY_ID
-		join MTL_ITEM_CATEGORIES ordcnf on ordcnf.category_set_id = 1100000201 and ordcnf.ORGANIZATION_ID = 84 and
-			(
-				case 
-					when qpa.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE1' then to_number(qpa.PRODUCT_ATTR_VALUE) 
-					when qpa.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE2' then mic.INVENTORY_ITEM_ID 
-					when qpa.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE3' then ordcnf.INVENTORY_ITEM_ID
-				end = ordcnf.INVENTORY_ITEM_ID
-			)
-		join
-			MTL_CATEGORIES_B ordcnf_cat on ordcnf_cat.CATEGORY_ID = ordcnf.CATEGORY_ID
-	where
-		adv_prc.ACTIVE = 'YES'
-		AND TRUNC(SYSDATE) BETWEEN NVL(TRUNC(QLL.START_DATE_ACTIVE),TRUNC(SYSDATE)) AND NVL(TRUNC(QLL.END_DATE_ACTIVE),TRUNC(SYSDATE+1))
-		AND TRUNC(SYSDATE) BETWEEN NVL(TRUNC(ADV_PRC.START_DATE),TRUNC(SYSDATE)) AND NVL(TRUNC(ADV_PRC.END_DATE),TRUNC(SYSDATE+1))
-		AND (pg.GROUP_PARTY_ID is not null or cust_hp.PARTY_ID is not null)
-		AND (qpa.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE3' or msib.SEGMENT1 is not null)
+		PARTY_PRICE_LIST adv_prc
+		join XXCMIS_ADVPRC_PRICELIST_ITEM pi on adv_prc.price_list_id = pi.price_list_id
+		join MTL_ITEM_CATEGORIES ordcnf on 
+			ordcnf.category_set_id = 1100000201 
+			and ordcnf.ORGANIZATION_ID = 84 
+			and case when pi.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE3' then ordcnf.INVENTORY_ITEM_ID else pi.INVENTORY_ITEM_ID end = ordcnf.INVENTORY_ITEM_ID
+		join MTL_CATEGORIES_B ordcnf_cat on ordcnf_cat.CATEGORY_ID = ordcnf.CATEGORY_ID
 )
 pivot (
 	max(case when CATEGORY is not null then 1 else 0 end)
 	for CATEGORY in (}' || v_in_clause || '))';
             --DBMS_OUTPUT.put_line(v_full_sql);
+			begin
+				execute immediate 'drop table XXCMIS_ADVPRC_PRICELIST_ITEM';
+            exception 
+                when others then 
+                    if SQLCODE != -942 then
+					raise;
+				end if;
+            end;
+			execute immediate v_pre_sql;
+			execute immediate 'create index XXCMIS_ADVPRC_PRICELIST_ITEM_pl on XXCMIS_ADVPRC_PRICELIST_ITEM (price_list_id)';
+			execute immediate 'create index XXCMIS_ADVPRC_PRICELIST_ITEM_item on XXCMIS_ADVPRC_PRICELIST_ITEM (inventory_item_id)';
             begin 
                 execute immediate 'drop table XXCMIS_TEMP_ADVPRC';
             exception 
