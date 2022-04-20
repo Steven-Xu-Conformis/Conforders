@@ -114,7 +114,7 @@ with PARTY_GROUPING as (
 		pg.GROUP_PARTY_ID,
         pg.HOSPITAL_ID,
         pg.HOSPITAL,
-		nvl(adv_prc.GRP_PRICE_LIST_ID, site_use.PRICE_LIST_ID) as PRICE_LIST_ID,
+		case when loc.COUNTRY in ('US', 'VI', 'VG') then adv_prc.GRP_PRICE_LIST_ID else site_use.PRICE_LIST_ID end as PRICE_LIST_ID,
 		loc.COUNTRY
 	from
 		PARTY_GROUPING pg
