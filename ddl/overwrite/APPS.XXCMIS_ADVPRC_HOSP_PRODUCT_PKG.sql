@@ -104,11 +104,13 @@ with PARTY_GROUPING as (
                 and HR.RELATIONSHIP_CODE = 'PARTICIPATING' 
 				and HR.END_DATE >= sysdate
 				and HR.STATUS ='A'
-		left outer join HZ_PARTIES GROUP_HP on GROUP_HP.PARTY_ID = HR.OBJECT_ID
+		left outer join HZ_PARTIES GROUP_HP on GROUP_HP.PARTY_ID = HR.OBJECT_ID and GROUP_HP.STATUS = 'A'
 		left outer join HZ_CUST_ACCOUNTS HCA on 
 			GROUP_HP.PARTY_ID = HCA.PARTY_ID -- for group account status
 			and HCA.CUSTOMER_CLASS_CODE is not NULL
 			and HCA.STATUS = 'A'
+	WHERE
+		HP.STATUS = 'A'		
 ), PARTY_PRICE_LIST as (
 	select distinct
 		pg.GROUP_PARTY_ID,
@@ -122,10 +124,10 @@ with PARTY_GROUPING as (
             (adv_prc.GRP_PARTY_ID = pg.GROUP_PARTY_ID or adv_prc.CUST_PARTY_ID = pg.HOSPITAL_ID) 
             and adv_prc.ACTIVE = 'YES'
             AND (SYSDATE) BETWEEN NVL((ADV_PRC.START_DATE),(SYSDATE)) AND NVL((ADV_PRC.END_DATE),(SYSDATE+1))
-		join HZ_PARTY_SITES ps on ps.PARTY_ID = pg.HOSPITAL_ID	
+		join HZ_PARTY_SITES ps on ps.PARTY_ID = pg.HOSPITAL_ID and ps.STATUS = 'A'
 		join HZ_LOCATIONS loc on ps.LOCATION_ID = loc.LOCATION_ID
-		join HZ_CUST_ACCT_SITES_ALL cas on cas.PARTY_SITE_ID = ps.PARTY_SITE_ID
-		join HZ_CUST_SITE_USES_ALL site_use on site_use.CUST_ACCT_SITE_ID = cas.CUST_ACCT_SITE_ID
+		join HZ_CUST_ACCT_SITES_ALL cas on cas.PARTY_SITE_ID = ps.PARTY_SITE_ID and cas.STATUS = 'A'
+		join HZ_CUST_SITE_USES_ALL site_use on site_use.CUST_ACCT_SITE_ID = cas.CUST_ACCT_SITE_ID and site_use.STATUS = 'A'
 )
 select 
 	*
