@@ -32,6 +32,7 @@ as
    1.1				11-MAR-2022			Steven Xu				Added update query to set all nulls to 0
    1.2				12-APR-2022			Steven Xu				Changed logic to include OUS hospitals
 																break the query into 2 parts for performance
+   1.3				31-Aug-2022			Steven Xu				break up the query further for performance
 *******************************************************************************/
 	procedure REFRESH_HOSP_PRODUCT is  
 			v_in_clause varchar2(4000);
@@ -39,6 +40,8 @@ as
 			v_update_clause varchar2(4000);
 			v_update_sql varchar2(4000);
 			v_pre_sql varchar2(4000);
+			v_pre_sql2 varchar2(4000);
+			v_pre_sql3 varchar2(4000);
 		begin
 			select
 				listagg('''' || SEGMENT1 || ''' as ' || SEGMENT1, ',')  WITHIN GROUP (ORDER BY SEGMENT1) into v_in_clause
@@ -48,7 +51,7 @@ as
 						MTL_ITEM_CATEGORIES ordcnf
 						join MTL_CATEGORIES_B ordcnf_cat on ordcnf_cat.CATEGORY_ID = ordcnf.CATEGORY_ID
 					where
-						ordcnf.category_set_id = 1100000201 and ordcnf.ORGANIZATION_ID = 84
+						ordcnf.category_set_id = 1100000202 and ordcnf.ORGANIZATION_ID = 84
 				);
 
 			select
@@ -59,7 +62,7 @@ as
 						MTL_ITEM_CATEGORIES ordcnf
 						join MTL_CATEGORIES_B ordcnf_cat on ordcnf_cat.CATEGORY_ID = ordcnf.CATEGORY_ID
 					where
-						ordcnf.category_set_id = 1100000201 and ordcnf.ORGANIZATION_ID = 84
+						ordcnf.category_set_id = 1100000202 and ordcnf.ORGANIZATION_ID = 84
 				);
 			v_update_sql := q'{
 				update XXCMIS_TEMP_ADVPRC set
@@ -90,8 +93,8 @@ where
 	AND (qpa.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE3' or msib.SEGMENT1 is not null)			
 			}';
 			
-			v_full_sql := q'{
-create table XXCMIS_TEMP_ADVPRC as
+			v_pre_sql2 := q'{
+create table XXCMIS_ADVPRC_PARTY_PRICELIST as
 with PARTY_GROUPING as (
 	select
 		GROUP_HP.PARTY_ID as GROUP_PARTY_ID,
@@ -111,8 +114,8 @@ with PARTY_GROUPING as (
 			and HCA.STATUS = 'A'
 	WHERE
 		HP.STATUS = 'A'		
-), PARTY_PRICE_LIST as (
-	select distinct
+)
+	select distinct 
 		pg.GROUP_PARTY_ID,
         pg.HOSPITAL_ID,
         pg.HOSPITAL,
@@ -127,28 +130,50 @@ with PARTY_GROUPING as (
 		join HZ_PARTY_SITES ps on ps.PARTY_ID = pg.HOSPITAL_ID and ps.STATUS = 'A'
 		join HZ_LOCATIONS loc on ps.LOCATION_ID = loc.LOCATION_ID
 		join HZ_CUST_ACCT_SITES_ALL cas on cas.PARTY_SITE_ID = ps.PARTY_SITE_ID and cas.STATUS = 'A'
-		join HZ_CUST_SITE_USES_ALL site_use on site_use.CUST_ACCT_SITE_ID = cas.CUST_ACCT_SITE_ID and site_use.STATUS = 'A'
-)
-select 
-	*
-from (
+		join HZ_CUST_SITE_USES_ALL site_use on site_use.CUST_ACCT_SITE_ID = cas.CUST_ACCT_SITE_ID and site_use.STATUS = 'A'			
+			}';
+			
+			v_pre_sql3 := q'{
+create table XXCMIS_ADVPRC_PARTY_CATEGORY as
 	select
 		adv_prc.HOSPITAL_ID as HOSPITAL_ID,
 		adv_prc.HOSPITAL as HOSPITAL,
         ordcnf_cat.SEGMENT1 as CATEGORY
 	from 
-		PARTY_PRICE_LIST adv_prc
+		XXCMIS_ADVPRC_PARTY_PRICELIST adv_prc
 		join XXCMIS_ADVPRC_PRICELIST_ITEM pi on adv_prc.price_list_id = pi.price_list_id
 		join MTL_ITEM_CATEGORIES ordcnf on 
-			ordcnf.category_set_id = 1100000201 
+			ordcnf.category_set_id = 1100000202 
 			and ordcnf.ORGANIZATION_ID = 84 
-			and case when pi.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE3' then ordcnf.INVENTORY_ITEM_ID else pi.INVENTORY_ITEM_ID end = ordcnf.INVENTORY_ITEM_ID
-		join MTL_CATEGORIES_B ordcnf_cat on ordcnf_cat.CATEGORY_ID = ordcnf.CATEGORY_ID
+			--and case when pi.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE3' then ordcnf.INVENTORY_ITEM_ID else pi.INVENTORY_ITEM_ID end = ordcnf.INVENTORY_ITEM_ID
+            and pi.INVENTORY_ITEM_ID = ordcnf.INVENTORY_ITEM_ID
+		join MTL_CATEGORIES_B ordcnf_cat on ordcnf_cat.CATEGORY_ID = ordcnf.CATEGORY_ID	
+    where 
+        pi.PRODUCT_ATTRIBUTE in ('PRICING_ATTRIBUTE1', 'PRICING_ATTRIBUTE2')
+union all
+    select
+		adv_prc.HOSPITAL_ID as HOSPITAL_ID,
+		adv_prc.HOSPITAL as HOSPITAL,
+        ordcnf_cat.SEGMENT1 as CATEGORY
+	from 
+		XXCMIS_ADVPRC_PARTY_PRICELIST adv_prc
+		join XXCMIS_ADVPRC_PRICELIST_ITEM pi on adv_prc.price_list_id = pi.price_list_id
+		join MTL_CATEGORIES_B ordcnf_cat on 1=1
+    where 
+        pi.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE3'		
+			}';
+			v_full_sql := q'{
+create table XXCMIS_TEMP_ADVPRC as
+select 
+	*
+from (
+	XXCMIS_ADVPRC_PARTY_CATEGORY
 )
 pivot (
 	max(case when CATEGORY is not null then 1 else 0 end)
 	for CATEGORY in (}' || v_in_clause || '))';
             --DBMS_OUTPUT.put_line(v_full_sql);
+			-- create first temp table XXCMIS_ADVPRC_PRICELIST_ITEM
 			begin
 				execute immediate 'drop table XXCMIS_ADVPRC_PRICELIST_ITEM';
             exception 
@@ -158,9 +183,36 @@ pivot (
 				end if;
             end;
 			execute immediate v_pre_sql;
-			execute immediate 'create index XXCMIS_ADVPRC_PRICELIST_ITEM_pl on XXCMIS_ADVPRC_PRICELIST_ITEM (price_list_id)';
-			execute immediate 'create index XXCMIS_ADVPRC_PRICELIST_ITEM_item on XXCMIS_ADVPRC_PRICELIST_ITEM (inventory_item_id)';
-            begin 
+			execute immediate 'create index ADVPRC_PRICELIST_ITEM_pl on XXCMIS_ADVPRC_PRICELIST_ITEM (price_list_id)';
+			execute immediate 'create index ADVPRC_PRICELIST_ITEM_item on XXCMIS_ADVPRC_PRICELIST_ITEM (inventory_item_id)';
+			execute immediate 'create index ADVPRC_PRICELIST_ITEM_attr on XXCMIS_ADVPRC_PRICELIST_ITEM (PRODUCT_ATTRIBUTE)';
+
+			-- create second temp table XXCMIS_ADVPRC_PARTY_PRICELIST
+			begin
+				execute immediate 'drop table XXCMIS_ADVPRC_PARTY_PRICELIST';
+            exception 
+                when others then 
+                    if SQLCODE != -942 then
+					raise;
+				end if;
+            end;
+			execute immediate v_pre_sql2;
+			execute immediate 'create index ADVPRC_PARTY_PRICELIST_pl on XXCMIS_ADVPRC_PARTY_PRICELIST (price_list_id)';			
+			
+			begin
+			-- create third temp table XXCMIS_ADVPRC_PARTY_CATEGORY
+			execute immediate 'drop table XXCMIS_ADVPRC_PARTY_CATEGORY';
+            exception 
+                when others then 
+                    if SQLCODE != -942 then
+					raise;
+				end if;
+            end;
+			execute immediate v_pre_sql3;
+			execute immediate 'create index ADVPRC_PARTY_CATEGORY_h on XXCMIS_ADVPRC_PARTY_CATEGORY (HOSPITAL_ID)';
+            
+			-- create final pivot table
+			begin 
                 execute immediate 'drop table XXCMIS_TEMP_ADVPRC';
             exception 
                 when others then 
