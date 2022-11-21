@@ -33,6 +33,7 @@ as
    1.2				12-APR-2022			Steven Xu				Changed logic to include OUS hospitals
 																break the query into 2 parts for performance
    1.3				31-Aug-2022			Steven Xu				break up the query further for performance
+   1.4				21-NOV-2022			Steven Xu				added columns PATIENTPAYIDENTITYPRICE and PATIENTPAYREQUIRED
 *******************************************************************************/
 	procedure REFRESH_HOSP_PRODUCT is  
 			v_in_clause varchar2(4000);
@@ -73,10 +74,12 @@ create table XXCMIS_ADVPRC_PRICELIST_ITEM as
 select
     qll.LIST_HEADER_ID as PRICE_LIST_ID,
 	qpa.PRODUCT_ATTRIBUTE,
+	case when msib.INVENTORY_ITEM_ID = 447191 and qll.OPERAND > 0 then qll.OPERAND end as PATIENTPAYIDENTITYPRICE,
     msib.INVENTORY_ITEM_ID
 --    ordcnf_cat.SEGMENT1 as CATEGORY
 from
 	QP_LIST_LINES qll
+	join QP_LIST_HEADERS qlh on qll.LIST_HEADER_ID = qlh.LIST_HEADER_ID
 	join QP_PRICING_ATTRIBUTES qpa on qll.LIST_LINE_ID = qpa.LIST_LINE_ID
 	left outer join MTL_ITEM_CATEGORIES mic on 
 		case when qpa.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE2' then to_number(qpa.PRODUCT_ATTR_VALUE) end = mic.CATEGORY_ID
@@ -90,6 +93,7 @@ from
 		and msib.ORGANIZATION_ID = 84
 where
 	(SYSDATE) BETWEEN NVL((QLL.START_DATE_ACTIVE),(SYSDATE)) AND NVL((QLL.END_DATE_ACTIVE),(SYSDATE+1))
+	and (SYSDATE) BETWEEN NVL((qlh.START_DATE_ACTIVE),(SYSDATE)) AND NVL((qlh.END_DATE_ACTIVE),(SYSDATE+1))
 	AND (qpa.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE3' or msib.SEGMENT1 is not null)			
 			}';
 			
@@ -99,19 +103,22 @@ with PARTY_GROUPING as (
 	select
 		GROUP_HP.PARTY_ID as GROUP_PARTY_ID,
 		HP.PARTY_ID as HOSPITAL_ID,
-		HP.PARTY_NAME as HOSPITAL
+		HP.PARTY_NAME as HOSPITAL,
+		case when HCA.ATTRIBUTE7 = 'Yes' then 1 else 0 end as PATIENTPAYREQUIRED
 	from
         HZ_PARTIES HP 
+		left outer join HZ_CUST_ACCOUNTS HCA on
+				HP.PARTY_ID = HCA.PARTY_ID
         left outer join HZ_RELATIONSHIPS HR  on 
                 HR.SUBJECT_ID = HP.PARTY_ID
                 and HR.RELATIONSHIP_CODE = 'PARTICIPATING' 
 				and HR.END_DATE >= sysdate
 				and HR.STATUS ='A'
 		left outer join HZ_PARTIES GROUP_HP on GROUP_HP.PARTY_ID = HR.OBJECT_ID and GROUP_HP.STATUS = 'A'
-		left outer join HZ_CUST_ACCOUNTS HCA on 
-			GROUP_HP.PARTY_ID = HCA.PARTY_ID -- for group account status
-			and HCA.CUSTOMER_CLASS_CODE is not NULL
-			and HCA.STATUS = 'A'
+		left outer join HZ_CUST_ACCOUNTS GROUP_HCA on 
+			GROUP_HP.PARTY_ID = GROUP_HCA.PARTY_ID -- for group account status
+			and GROUP_HCA.CUSTOMER_CLASS_CODE is not NULL
+			and GROUP_HCA.STATUS = 'A'
 	WHERE
 		HP.STATUS = 'A'		
 )
@@ -119,6 +126,7 @@ with PARTY_GROUPING as (
 		pg.GROUP_PARTY_ID,
         pg.HOSPITAL_ID,
         pg.HOSPITAL,
+		pg.PATIENTPAYREQUIRED,
 		case when loc.COUNTRY in ('US', 'VI', 'VG') then adv_prc.GRP_PRICE_LIST_ID else site_use.PRICE_LIST_ID end as PRICE_LIST_ID,
 		loc.COUNTRY
 	from
@@ -135,32 +143,45 @@ with PARTY_GROUPING as (
 			
 			v_pre_sql3 := q'{
 create table XXCMIS_ADVPRC_PARTY_CATEGORY as
-	select
-		adv_prc.HOSPITAL_ID as HOSPITAL_ID,
-		adv_prc.HOSPITAL as HOSPITAL,
-        ordcnf_cat.SEGMENT1 as CATEGORY
-	from 
-		XXCMIS_ADVPRC_PARTY_PRICELIST adv_prc
-		join XXCMIS_ADVPRC_PRICELIST_ITEM pi on adv_prc.price_list_id = pi.price_list_id
-		join MTL_ITEM_CATEGORIES ordcnf on 
-			ordcnf.category_set_id = 1100000202 
-			and ordcnf.ORGANIZATION_ID = 84 
-			--and case when pi.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE3' then ordcnf.INVENTORY_ITEM_ID else pi.INVENTORY_ITEM_ID end = ordcnf.INVENTORY_ITEM_ID
-            and pi.INVENTORY_ITEM_ID = ordcnf.INVENTORY_ITEM_ID
-		join MTL_CATEGORIES_B ordcnf_cat on ordcnf_cat.CATEGORY_ID = ordcnf.CATEGORY_ID	
-    where 
-        pi.PRODUCT_ATTRIBUTE in ('PRICING_ATTRIBUTE1', 'PRICING_ATTRIBUTE2')
-union all
-    select
-		adv_prc.HOSPITAL_ID as HOSPITAL_ID,
-		adv_prc.HOSPITAL as HOSPITAL,
-        ordcnf_cat.SEGMENT1 as CATEGORY
-	from 
-		XXCMIS_ADVPRC_PARTY_PRICELIST adv_prc
-		join XXCMIS_ADVPRC_PRICELIST_ITEM pi on adv_prc.price_list_id = pi.price_list_id
-		join MTL_CATEGORIES_B ordcnf_cat on 1=1
-    where 
-        pi.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE3'		
+select 
+	HOSPITAL_ID,
+	HOSPITAL,
+	max(PATIENTPAYREQUIRED) over (partition by HOSPITAL_ID) as PATIENTPAYREQUIRED,
+	max(PATIENTPAYIDENTITYPRICE) over (partition by HOSPITAL_ID) as PATIENTPAYIDENTITYPRICE,
+	CATEGORY
+from
+	(
+		select
+			adv_prc.HOSPITAL_ID as HOSPITAL_ID,
+			adv_prc.HOSPITAL as HOSPITAL,
+			adv_prc.PATIENTPAYREQUIRED,
+			pi.PATIENTPAYIDENTITYPRICE,
+			ordcnf_cat.SEGMENT1 as CATEGORY
+		from 
+			XXCMIS_ADVPRC_PARTY_PRICELIST adv_prc
+			join XXCMIS_ADVPRC_PRICELIST_ITEM pi on adv_prc.price_list_id = pi.price_list_id
+			join MTL_ITEM_CATEGORIES ordcnf on 
+				ordcnf.category_set_id = 1100000202 
+				and ordcnf.ORGANIZATION_ID = 84 
+				--and case when pi.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE3' then ordcnf.INVENTORY_ITEM_ID else pi.INVENTORY_ITEM_ID end = ordcnf.INVENTORY_ITEM_ID
+				and pi.INVENTORY_ITEM_ID = ordcnf.INVENTORY_ITEM_ID
+			join MTL_CATEGORIES_B ordcnf_cat on ordcnf_cat.CATEGORY_ID = ordcnf.CATEGORY_ID	
+		where 
+			pi.PRODUCT_ATTRIBUTE in ('PRICING_ATTRIBUTE1', 'PRICING_ATTRIBUTE2')
+	union all
+		select
+			adv_prc.HOSPITAL_ID as HOSPITAL_ID,
+			adv_prc.HOSPITAL as HOSPITAL,
+			adv_prc.PATIENTPAYREQUIRED,
+			null as PATIENTPAYIDENTITYPRICE,
+			ordcnf_cat.SEGMENT1 as CATEGORY
+		from 
+			XXCMIS_ADVPRC_PARTY_PRICELIST adv_prc
+			join XXCMIS_ADVPRC_PRICELIST_ITEM pi on adv_prc.price_list_id = pi.price_list_id
+			join MTL_CATEGORIES_B ordcnf_cat on 1=1
+		where 
+			pi.PRODUCT_ATTRIBUTE = 'PRICING_ATTRIBUTE3'		
+	)
 			}';
 			v_full_sql := q'{
 create table XXCMIS_TEMP_ADVPRC as
