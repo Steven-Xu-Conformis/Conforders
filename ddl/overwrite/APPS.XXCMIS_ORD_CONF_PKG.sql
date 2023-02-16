@@ -128,7 +128,7 @@ as
 						APPS.XXCMIS_CONF_ORD_V2
 					where
 						LAST_UPDATE_DATE > sysdate - 1/24 or 
-						SCAN_RECEIVED_DATE > sysdate - 7 or
+						SCAN_RECEIVED_DATE > sysdate - 14 or
 						DATE_SUBMITTED > sysdate - 7
 				) src
 			on 
